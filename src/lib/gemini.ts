@@ -671,12 +671,14 @@ INSTRUCTIONS:
 4. CRITICAL: DO NOT repeat any of the existing questions shown above - generate completely NEW and UNIQUE questions
 5. Use different problem scenarios, numerical values, and contexts from existing questions
 6. Ensure questions test deep understanding, not just memorization
-7. For MCQ: Distribute correct answers equally across options A, B, C, D
-8. Include relevant formulas, concepts, and problem-solving approaches
-9. Make questions challenging but fair for entrance exam level
-10. Use LaTeX for mathematical expressions: $ for inline, $$ for display
-11. Generate FRESH questions with different approaches, examples, and numerical values
-12. Ensure the question difficulty matches the topic's weightage importance
+7. For MCQ: Distribute correct answers equally across options A, B, C, D. ENSURE the correct answer is ALWAYS one of the 4 options.
+8. For MSQ: Can have 1, 2, 3, or 4 correct options. ENSURE all correct answers are present in the options.
+9. Include relevant formulas, concepts, and problem-solving approaches
+10. Make questions challenging but fair for entrance exam level
+11. Use LaTeX for mathematical expressions: $ for inline, $$ for display
+12. Generate FRESH questions with different approaches, examples, and numerical values
+13. Ensure the question difficulty matches the topic's weightage importance
+14. CRITICAL: The answer must EXACTLY match one of the provided options (for MCQ) or be a combination of the provided options (for MSQ)
 
 UNIQUENESS REQUIREMENTS:
 - Use different numerical values from existing questions
@@ -685,6 +687,14 @@ UNIQUENESS REQUIREMENTS:
 - Create questions that test the same concepts but with fresh perspectives
 - Avoid similar wording or structure to existing questions
 
+ANSWER MATCHING REQUIREMENTS:
+- For MCQ: The correct answer must be EXACTLY option A, B, C, or D
+- For MSQ: The correct answers must be a combination like "A", "B,C", "A,C,D", etc.
+- Keep mathematical expressions in standard form (π/3, not 1.047...)
+- Ensure numerical answers match the format used in options
+- If generating fractions, keep them in simplest form
+- For expressions with constants, use standard mathematical notation
+
 QUALITY REQUIREMENTS:
 - Questions should be at entrance exam difficulty level
 - Test conceptual understanding and application
@@ -692,6 +702,7 @@ QUALITY REQUIREMENTS:
 - Ensure proper grammar and clear question statements
 - Make distractors (wrong options) plausible but clearly incorrect
 - Each question must be COMPLETELY DIFFERENT from all existing questions
+- CRITICAL: Verify that the answer corresponds to one of the options before finalizing
 
 Generate ${count} high-quality ${questionType} question(s) for this topic.
 
@@ -701,7 +712,7 @@ RESPONSE FORMAT (JSON only):
     "question_statement": "Complete question with LaTeX math formatting",
     "question_type": "${questionType}",
     "options": ${questionType === 'MCQ' || questionType === 'MSQ' ? '["Option A", "Option B", "Option C", "Option D"]' : 'null'},
-    "answer": "Correct answer(s) - for MCQ: single option like 'A', for MSQ: multiple like 'A,C', for NAT: numerical value, for Subjective: key points",
+    "answer": "Correct answer(s) - for MCQ: single option like 'A', for MSQ: one or more like 'A', 'B,C', 'A,C,D', for NAT: numerical value, for Subjective: key points",
     "solution": "Detailed step-by-step solution using concepts from topic notes",
     "topic_id": "${topic.id}",
     "difficulty_level": "Medium"
@@ -712,6 +723,8 @@ CRITICAL:
 - Return ONLY valid JSON. Use double backslashes (\\\\) for LaTeX commands.
 - Generate UNIQUE questions that are COMPLETELY DIFFERENT from existing ones.
 - Use the PYQs as reference for difficulty and style, but create original content.
+- VERIFY that the answer matches the options before returning the response.
+- For MSQ, ensure 1-4 options can be correct, not necessarily multiple.
 `;
 
       const result = await model.generateContent([prompt]);
@@ -779,6 +792,120 @@ export function validateQuestionAnswer(question: ExtractedQuestion): { isValid: 
   }
 }
 
+// Enhanced validation with correction capabilities
+export async function validateAndCorrectQuestion(question: ExtractedQuestion): Promise<{ 
+  isValid: boolean; 
+  correctedQuestion?: ExtractedQuestion; 
+  reason?: string 
+}> {
+  const validation = validateQuestionAnswer(question);
+  
+  if (validation.isValid) {
+    return { isValid: true, correctedQuestion: question };
+  }
+  
+  // Try to correct the question if validation failed
+  if (question.question_type === 'MCQ' || question.question_type === 'MSQ') {
+    try {
+      const correctedQuestion = await correctQuestionOptions(question);
+      const correctedValidation = validateQuestionAnswer(correctedQuestion);
+      
+      if (correctedValidation.isValid) {
+        return { isValid: true, correctedQuestion };
+      } else {
+        return { isValid: false, reason: `Correction failed: ${correctedValidation.reason}` };
+      }
+    } catch (error) {
+      return { isValid: false, reason: `Correction error: ${error.message}` };
+    }
+  }
+  
+  return { isValid: false, reason: validation.reason };
+}
+
+// Correct question options using AI
+async function correctQuestionOptions(question: ExtractedQuestion): Promise<ExtractedQuestion> {
+  const maxRetries = API_KEYS.length;
+  let retryCount = 0;
+  
+  while (retryCount < maxRetries) {
+    try {
+      const apiKey = getNextApiKey();
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ 
+        model: 'gemini-1.5-flash',
+        generationConfig: {
+          temperature: 0.3,
+          topK: 20,
+          topP: 0.8,
+        }
+      });
+
+      const prompt = `
+You are an expert question corrector. The following ${question.question_type} question has an answer that doesn't match any of the provided options.
+
+QUESTION: ${question.question_statement}
+CURRENT OPTIONS: ${question.options?.join(', ')}
+CORRECT ANSWER: ${question.answer}
+QUESTION TYPE: ${question.question_type}
+
+TASK: Fix the options to include the correct answer while maintaining educational value.
+
+RULES:
+1. For MCQ: Ensure exactly ONE of the 4 options matches the correct answer
+2. For MSQ: Ensure the correct answer options are present (can be 1, 2, 3, or 4 options)
+3. Keep mathematical expressions in their simplest, most standard form (e.g., π/3, not 1.047...)
+4. Replace the LEAST relevant/most obviously wrong option with the correct answer
+5. Maintain consistent formatting and difficulty level
+6. Ensure all options are plausible but only the correct one(s) are actually correct
+7. For MSQ, if answer is "A,C", ensure options A and C are correct, B and D are incorrect
+
+CORRECTION STRATEGY:
+- Identify which option is least relevant or most obviously incorrect
+- Replace it with the correct answer in proper format
+- Ensure the correct answer fits naturally with other options
+- Maintain mathematical/scientific notation consistency
+
+RESPONSE FORMAT (JSON only):
+{
+  "corrected_options": ["Option A", "Option B", "Option C", "Option D"],
+  "explanation": "Brief explanation of what was corrected"
+}
+
+CRITICAL: Return ONLY valid JSON. Use double backslashes (\\\\) for LaTeX commands.
+`;
+
+      const result = await model.generateContent([prompt]);
+      const response = await result.response;
+      const text = response.text();
+      
+      const jsonContent = extractJsonFromText(text);
+      if (!jsonContent) {
+        throw new Error('No valid JSON response for correction');
+      }
+
+      const correction = JSON.parse(jsonContent);
+      
+      return {
+        ...question,
+        options: correction.corrected_options
+      };
+
+    } catch (error: any) {
+      retryCount++;
+      if (error.message?.includes('429') || error.message?.includes('quota')) {
+        if (retryCount < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+  
+  throw new Error('Failed to correct question options after trying all API keys');
+}
+
 function validateMCQAnswer(options: string[] | null, answer: string): { isValid: boolean; reason?: string } {
   if (!options || options.length === 0) {
     return { isValid: false, reason: 'No options provided for MCQ' };
@@ -823,9 +950,9 @@ function validateMSQAnswer(options: string[] | null, answer: string): { isValid:
     }
   }
   
-  // MSQ should have at least 2 correct options (otherwise it would be MCQ)
-  if (answerOptions.length < 2) {
-    return { isValid: false, reason: 'MSQ should have at least 2 correct options' };
+  // MSQ can have 1 or more correct options (1, 2, 3, or 4)
+  if (answerOptions.length < 1 || answerOptions.length > 4) {
+    return { isValid: false, reason: 'MSQ should have 1-4 correct options' };
   }
   
   return { isValid: true };

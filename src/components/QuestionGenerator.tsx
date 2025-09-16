@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { Brain, BookOpen, Database, Zap, Settings, Play, Pause, CheckCircle, Circle, Hash, Edit3, Target, TrendingUp, Clock, Award } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { generateQuestionsForTopic, generateSolutionsForPYQs, validateQuestionAnswer, ExtractedQuestion } from '../lib/gemini';
+import { generateQuestionsForTopic, generateSolutionsForPYQs, validateAndCorrectQuestion, ExtractedQuestion } from '../lib/gemini';
 import { QuestionPreview } from './QuestionPreview';
 import toast, { Toaster } from 'react-hot-toast';
 
@@ -347,11 +347,12 @@ export function QuestionGenerator() {
             if (generatedQuestions.length > 0) {
               const question = generatedQuestions[0];
               
-              // Validate the question answer
-              const validation = validateQuestionAnswer(question);
+              // Enhanced validation with correction
+              toast(`🔍 Validating question ${questionIndex + 1} for ${topic.name}...`, { duration: 1500 });
+              const validation = await validateAndCorrectQuestion(question);
               
               if (!validation.isValid) {
-                toast.error(`❌ Question validation failed: ${validation.reason}. Retrying...`);
+                toast.error(`❌ Question validation failed: ${validation.reason}. Regenerating...`);
                 console.log('Invalid question:', {
                   question: question.question_statement,
                   options: question.options,
@@ -364,16 +365,29 @@ export function QuestionGenerator() {
                 continue;
               }
               
-              // Question is valid, save to database
+              // Use corrected question if available
+              const finalQuestion = validation.correctedQuestion || question;
+              
+              // Log if question was corrected
+              if (validation.correctedQuestion && validation.correctedQuestion !== question) {
+                toast.success(`🔧 Question ${questionIndex + 1} corrected and validated!`);
+                console.log('Question corrected:', {
+                  original: question.options,
+                  corrected: validation.correctedQuestion.options,
+                  answer: validation.correctedQuestion.answer
+                });
+              }
+              
+              // Save the validated/corrected question to database
               const questionToSave = {
                 topic_id: topic.id,
                 topic_name: topic.name,
                 chapter_id: topic.chapter_id,
-                question_statement: question.question_statement,
+                question_statement: finalQuestion.question_statement,
                 question_type: questionType,
-                options: question.options,
-                answer: question.answer,
-                solution: question.solution,
+                options: finalQuestion.options,
+                answer: finalQuestion.answer,
+                solution: finalQuestion.solution,
                 slot: selectedSlot || null,
                 part: selectedPart || null,
                 correct_marks: questionConfig.correct_marks,
@@ -395,21 +409,21 @@ export function QuestionGenerator() {
                 toast.error(`Failed to save question: ${error.message}`);
               } else {
                 totalGenerated++;
-                allGeneratedQuestions.push(question);
+                allGeneratedQuestions.push(finalQuestion);
                 validQuestionGenerated = true;
                 
                 // Add this question to existing questions context for next iterations
                 if (allExistingQuestions) {
                   allExistingQuestions.unshift({
-                    question_statement: question.question_statement,
-                    options: question.options,
-                    answer: question.answer
+                    question_statement: finalQuestion.question_statement,
+                    options: finalQuestion.options,
+                    answer: finalQuestion.answer
                   });
                 }
                 
                 // Keep only last 3 questions for preview
                 setRecentQuestions(prev => {
-                  const updated = [...prev, question];
+                  const updated = [...prev, finalQuestion];
                   return updated.slice(-3);
                 });
 
